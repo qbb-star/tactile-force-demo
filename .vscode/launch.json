@@ -1,0 +1,67 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+
+        {
+            "name": "demo_02_dog_detect",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/demo_02_dog_detect.py",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false
+        },
+        {
+            "name": "demo_03_pca_sort",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/demo_03_pca_sort.py",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false
+        },
+        {
+            "name": "demo_04_homography",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/demo_04_homography.py",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false
+        },
+        {
+            "name": "demo_05_warp",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/demo_05_warp.py",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false
+        },
+        {
+            "name": "demo_06_compare",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/demo_06_compare.py",
+            "console": "integratedTerminal",
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}",
+            "justMyCode": false
+        }
+
+    ]
+}
