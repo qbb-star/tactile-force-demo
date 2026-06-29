@@ -111,12 +111,125 @@ def _kmeans_1d(values, k, iters=50):
 
 
 # ============================================================
-# 3. PCA + k-means + 贪心分配 → 网格排序
+# 3. 拓扑检查（行/列单调性 + 间距一致性）
 # ============================================================
+def validate_grid_topology(grid_points, monotonic_tol=0.35, spacing_tol=0.55):
+    """
+    检查网格拓扑是否合理。
+
+    参数:
+        grid_points: (N_ROWS, N_COLS, 2) 数组，空为 NaN
+        monotonic_tol: 单调性容忍度（超过该比例的递减点视为有问题）
+        spacing_tol: 间距容忍度（间距中位数相对偏差超过该值视为有问题）
+
+    返回:
+        (is_valid, issues): 是否合法 + 问题列表
+    """
+    gp = np.asarray(grid_points, dtype=np.float64)
+    rows, cols, _ = gp.shape
+    issues = []
+
+    for r in range(rows):
+        dx = np.diff(gp[r, :, 0])
+        valid = ~np.isnan(dx)
+        if np.sum(valid) > 0 and float(np.mean(dx[valid] < 0)) > monotonic_tol:
+            issues.append(f"row {r}: x 不单调（可能行列交换）")
+
+    for c in range(cols):
+        dy = np.diff(gp[:, c, 1])
+        valid = ~np.isnan(dy)
+        if np.sum(valid) > 0 and float(np.mean(dy[valid] < 0)) > monotonic_tol:
+            issues.append(f"col {c}: y 不单调（可能行列交换）")
+
+    dx = np.linalg.norm(gp[:, 1:, :] - gp[:, :-1, :], axis=2).reshape(-1)
+    dy = np.linalg.norm(gp[1:, :, :] - gp[:-1, :, :], axis=2).reshape(-1)
+    dx = dx[~np.isnan(dx)]
+    dy = dy[~np.isnan(dy)]
+
+    if dx.size > 0:
+        dx_med = float(np.median(dx))
+        if dx_med > 1e-6 and float(np.median(np.abs(dx - dx_med) / dx_med)) > spacing_tol:
+            issues.append("水平间距高度不均匀")
+    if dy.size > 0:
+        dy_med = float(np.median(dy))
+        if dy_med > 1e-6 and float(np.median(np.abs(dy - dy_med) / dy_med)) > spacing_tol:
+            issues.append("垂直间距高度不均匀")
+
+    return len(issues) == 0, issues
+
+
+def grid_topology_score(grid_points):
+    """返回拓扑问题数量（越少越好，0=完美）。"""
+    _, issues = validate_grid_topology(grid_points)
+    return len(issues)
+
+
+# ============================================================
+# 4. Rank-based 排序（k-means 失效时的兜底方案）
+# ============================================================
+def _sort_grid_rank_based(points, col_base, row_base):
+    """
+    按行坐标排序均分行，行内按列坐标排序。
+    对大变形/不均匀间距更鲁棒。
+    """
+    n_expected = N_ROWS * N_COLS
+    if points.shape[0] < n_expected:
+        return None
+
+    row_order = np.argsort(row_base)
+    top_pts = points[row_order[:n_expected]]
+    top_col = col_base[row_order[:n_expected]]
+
+    grid_points = np.full((N_ROWS, N_COLS, 2), np.nan, dtype=np.float64)
+
+    for r in range(N_ROWS):
+        start = r * N_COLS
+        end = start + N_COLS
+        row_pts = top_pts[start:end]
+        row_cols = top_col[start:end]
+        col_order = np.argsort(row_cols)
+        for c_idx, pt_idx in enumerate(col_order):
+            grid_points[r, c_idx] = row_pts[pt_idx]
+
+    return grid_points
+
+
+# ============================================================
+# 5. PCA + k-means + 贪心分配 → 网格排序（多策略择优）
+# ============================================================
+def _sort_grid_kmeans_greedy(points, col_base, row_base):
+    """单次 k-means + 贪心分配。"""
+    x_centers = _kmeans_1d(col_base, N_COLS)
+    y_centers = _kmeans_1d(row_base, N_ROWS)
+
+    col_idx = np.argmin(np.abs(col_base[:, None] - x_centers[None, :]), axis=1)
+    row_idx = np.argmin(np.abs(row_base[:, None] - y_centers[None, :]), axis=1)
+
+    if np.corrcoef(col_idx, points[:, 0])[0, 1] < 0:
+        col_idx = N_COLS - 1 - col_idx
+        x_centers = x_centers[::-1]
+    if np.corrcoef(row_idx, points[:, 1])[0, 1] < 0:
+        row_idx = N_ROWS - 1 - row_idx
+        y_centers = y_centers[::-1]
+
+    costs = (col_base - x_centers[col_idx]) ** 2 + (row_base - y_centers[row_idx]) ** 2
+    order_pts = np.argsort(costs)
+
+    grid_points = np.full((N_ROWS, N_COLS, 2), np.nan, dtype=np.float64)
+    for i in order_pts:
+        r = int(row_idx[i])
+        c = int(col_idx[i])
+        if 0 <= r < N_ROWS and 0 <= c < N_COLS and np.isnan(grid_points[r, c, 0]):
+            grid_points[r, c] = points[i]
+
+    return grid_points
+
+
 def sort_grid(keypoints):
     """
     将检测到的 keypoints 排序为规则网格。
-    算法与 Phase 1 demo_05 完全一致。
+    采用多策略择优：尝试 8 种 k-means 方向组合 + rank-based fallback，
+    选拓扑问题最少的结果。
 
     参数:
         keypoints: cv2.KeyPoint 列表
@@ -144,42 +257,57 @@ def sort_grid(keypoints):
     if np.corrcoef(proj[:, 1], centered[:, 1])[0, 1] < 0:
         proj[:, 1] *= -1
 
-    # 判断哪个主成分对应列方向（水平）
     pc1_is_horizontal = abs(R[0, 0]) > abs(R[0, 1])
-    if pc1_is_horizontal:
-        col_base = proj[:, 0]
-        row_base = proj[:, 1]
-    else:
-        col_base = proj[:, 1]
-        row_base = proj[:, 0]
 
-    # k-means 聚类
-    x_centers = _kmeans_1d(col_base, N_COLS)
-    y_centers = _kmeans_1d(row_base, N_ROWS)
+    best_grid = None
+    best_score = 10**9
 
-    col_idx = np.argmin(np.abs(col_base[:, None] - x_centers[None, :]), axis=1)
-    row_idx = np.argmin(np.abs(row_base[:, None] - y_centers[None, :]), axis=1)
+    for swap_axes in (False, True):
+        if swap_axes ^ pc1_is_horizontal:
+            col_base = proj[:, 1]
+            row_base = proj[:, 0]
+        else:
+            col_base = proj[:, 0]
+            row_base = proj[:, 1]
 
-    # 方向校正：列从左到右，行从上到下
-    if np.corrcoef(col_idx, points[:, 0])[0, 1] < 0:
-        col_idx = N_COLS - 1 - col_idx
-        x_centers = x_centers[::-1]
-    if np.corrcoef(row_idx, points[:, 1])[0, 1] < 0:
-        row_idx = N_ROWS - 1 - row_idx
-        y_centers = y_centers[::-1]
+        for flip_col in (False, True):
+            for flip_row in (False, True):
+                col_c = -col_base if flip_col else col_base
+                row_c = -row_base if flip_row else row_base
+                grid = _sort_grid_kmeans_greedy(points, col_c, row_c)
+                score = grid_topology_score(grid)
+                if score < best_score:
+                    best_score = score
+                    best_grid = grid
 
-    # 贪心分配（按代价从小到大）
-    costs = (col_base - x_centers[col_idx]) ** 2 + (row_base - y_centers[row_idx]) ** 2
-    order_pts = np.argsort(costs)
+    # rank-based fallback（k-means 效果不好时用）
+    if best_score > 0 and points.shape[0] >= N_ROWS * N_COLS:
+        for swap_axes in (False, True):
+            if swap_axes ^ pc1_is_horizontal:
+                col_base = proj[:, 1]
+                row_base = proj[:, 0]
+            else:
+                col_base = proj[:, 0]
+                row_base = proj[:, 1]
 
-    grid_points = np.full((N_ROWS, N_COLS, 2), np.nan, dtype=np.float64)
-    for i in order_pts:
-        r = int(row_idx[i])
-        c = int(col_idx[i])
-        if 0 <= r < N_ROWS and 0 <= c < N_COLS and np.isnan(grid_points[r, c, 0]):
-            grid_points[r, c] = points[i]
+            for flip_col in (False, True):
+                for flip_row in (False, True):
+                    col_c = -col_base if flip_col else col_base
+                    row_c = -row_base if flip_row else row_base
+                    rank_grid = _sort_grid_rank_based(points, col_c, row_c)
+                    if rank_grid is not None:
+                        rank_score = grid_topology_score(rank_grid)
+                        if rank_score < best_score:
+                            best_score = rank_score
+                            best_grid = rank_grid
 
-    return grid_points
+    if best_grid is None:
+        # 极端情况：所有方法都失败，退回原始 k-means
+        col_base = proj[:, 0] if pc1_is_horizontal else proj[:, 1]
+        row_base = proj[:, 1] if pc1_is_horizontal else proj[:, 0]
+        best_grid = _sort_grid_kmeans_greedy(points, col_base, row_base)
+
+    return best_grid
 
 
 # ============================================================
@@ -206,7 +334,7 @@ def detect_and_sort(img):
 # 5. 构建 Warp（完整 warp，与 demo_05 一致）
 # ============================================================
 def build_warp(grid_points, pitch_x_mm=0.6, pitch_y_mm=0.6,
-               out_width=320, pad_px=20.0, mask_bottom_px=20):
+               out_width=320, pad_px=20.0, mask_bottom_px=5):
     """
     从网格点构建稠密 warp 查找表。
     算法与 Phase 1 demo_05 完全一致。
@@ -457,7 +585,7 @@ def load_warp(path):
 # ============================================================
 WARP_OUT_WIDTH = 320
 WARP_PAD_PX = 20.0
-WARP_MASK_BOTTOM_PX = 20
+WARP_MASK_BOTTOM_PX = 0
 PITCH_X_MM = 0.6
 PITCH_Y_MM = 0.6
 
@@ -485,10 +613,13 @@ def crop_rectified(rectified, meta, mask_bottom_px=WARP_MASK_BOTTOM_PX):
     u1 = pad_px + (N_COLS - 1) * dx_rect
     v1 = pad_px + (N_ROWS - 1) * dy_rect
 
-    x0 = max(0, int(np.floor(min(u0, u1) - pad_px)))
-    x1 = min(rectified.shape[1], int(np.ceil(max(u0, u1) + pad_px)))
-    y0 = max(0, int(np.floor(min(v0, v1) - pad_px)))
-    y1 = min(rectified.shape[0], int(np.ceil(max(v0, v1) + pad_px)) - int(mask_bottom_px))
+    margin_y = dy_rect * 0.6
+    margin_x = dx_rect * 0.6
+
+    x0 = max(0, int(np.floor(min(u0, u1) - margin_x)))
+    x1 = min(rectified.shape[1], int(np.ceil(max(u0, u1) + margin_x)))
+    y0 = max(0, int(np.floor(min(v0, v1) - margin_y)))
+    y1 = min(rectified.shape[0], int(np.ceil(max(v0, v1) + margin_y)) - int(mask_bottom_px))
 
     return rectified[y0:y1, x0:x1], (x0, y0)
 

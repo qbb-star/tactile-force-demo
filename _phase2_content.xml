@@ -1,0 +1,192 @@
+<h3>Phase 总览</h3>
+<p><b>目标</b>：掌握从接触图像中计算标记点位移场的完整方法，包括图像矫正、标记点修复、正向点映射和物理单位转换。</p>
+<p><b>学习路径</b>：</p>
+<pre><code>参考图+接触图 → 双图检测排序 → Warp图像矫正 → Inpaint标记修复 → 正向点映射 → 位移场计算(mm) → 热力图可视化
+    ↓             ↓              ↓               ↓              ↓             ↓                ↓
+  demo_07       demo_07       demo_08/09       demo_08        demo_09       demo_09          demo_09/10
+</code></pre>
+<p><b>核心概念</b>：</p>
+<ul>
+<li>位移是相对量：需要参考图（无变形）作为基准</li>
+<li>像素 → 物理单位：通过 Warp 的物理间距参数（pitch_x/y）转换</li>
+<li>正向映射：从原始图像坐标映射到矫正后坐标（三角剖分逆变换）</li>
+<li>标记点修复（Inpaint）：去除标记点后补全皮肤纹理，便于后续光度立体</li>
+</ul>
+<hr/>
+
+<h3>📍 demo_07：双图检测与位移初步</h3>
+<p><b>状态</b>：✅ 已完成<br/><b>学习日期</b>：2026-06<br/><b>核心文件</b>：<code>标记点跟踪/demo_07_two_image_detect.py</code></p>
+<h4>学习内容</h4>
+<ul>
+<li>参考图与接触图的对比理解</li>
+<li>DoG检测 + 网格排序在两张图上的复用</li>
+<li>位移向量的直观理解（方向 + 大小）</li>
+<li>位移热力图初步（|d|、dx、dy）</li>
+</ul>
+<h4>核心计算</h4>
+<pre><code>对于每个网格点 (r, c)：
+  dx = grid_contact[r, c, 0] - grid_ref[r, c, 0]
+  dy = grid_contact[r, c, 1] - grid_ref[r, c, 1]
+  |d| = sqrt(dx² + dy²)
+
+前提：两张图的排序必须正确对应（同一网格单元是同一点）
+</code></pre>
+<h4>关键观察</h4>
+<table>
+<colgroup><col/><col/><col/></colgroup>
+<thead>
+<tr><th><p>指标</p></th><th><p>小位移图像</p></th><th><p>大位移图像</p></th></tr>
+</thead>
+<tbody>
+<tr><td><p>有效配对点</p></td><td><p>336 / 336</p></td><td><p>292~336 / 336</p></td></tr>
+<tr><td><p>最大位移</p></td><td><p>~5 px</p></td><td><p>~30+ px</p></td></tr>
+<tr><td><p>位移分布</p></td><td><p>小范围集中</p></td><td><p>大范围扩散</p></td></tr>
+</tbody>
+</table>
+<h4>逐步调试走读版</h4>
+<p>为了深入理解每一步，创建了 <code>demo_07_step_by_step.py</code>，特点：</p>
+<ul>
+<li>7个步骤逐步讲解，每步暂停等你理解</li>
+<li>每步都有「数」（数值统计）+「形」（可视化图）</li>
+<li>从加载图像到位移热力图，完整走一遍</li>
+</ul>
+<hr/>
+
+<h3>📍 demo_08：Warp 矫正 + Inpaint 标记点修复</h3>
+<p><b>状态</b>：✅ 已完成<br/><b>学习日期</b>：2026-06<br/><b>核心文件</b>：<code>标记点跟踪/demo_08_warp_inpaint.py</code></p>
+<h4>学习内容</h4>
+<ul>
+<li>加载 Phase 1 构建的 Warp 参数</li>
+<li>对参考图和接触图分别进行几何矫正</li>
+<li>标记点遮罩生成（两种方式：原始图 vs 矫正图）</li>
+<li>Inpaint 算法修复标记点位置</li>
+<li>两种修复顺序对比：先矫正后修复 vs 先修复后矫正</li>
+</ul>
+<h4>核心算法：Inpaint 修复</h4>
+<pre><code>步骤：
+  1. 生成标记点遮罩（marker mask）：标记点位置画圆
+  2. 用 Inpaint 算法根据周围像素补全遮罩区域
+  3. 得到"没有标记点"的皮肤纹理图
+
+算法：Telea（OpenCV 内置），半径 3px
+作用：为后续光度立体（Phase 3）做准备——法向估计需要干净的皮肤纹理
+</code></pre>
+<h4>两种 Inpaint 方式对比</h4>
+<table>
+<colgroup><col/><col/><col/></colgroup>
+<thead>
+<tr><th><p>方式</p></th><th><p>流程</p></th><th><p>适用场景</p></th></tr>
+</thead>
+<tbody>
+<tr><td><p>先矫正后修复</p></td><td><p>原图 → Warp矫正 → Inpaint</p></td><td><p>推荐！矫正后网格均匀，遮罩生成更准确</p></td></tr>
+<tr><td><p>先修复后矫正</p></td><td><p>原图 → Inpaint → Warp矫正</p></td><td><p>参考对比，验证差异</p></td></tr>
+</tbody>
+</table>
+<hr/>
+
+<h3>📍 demo_09：位移场计算与热力图（重点）</h3>
+<p><b>状态</b>：✅ 已完成<br/><b>学习日期</b>：2026-06<br/><b>核心文件</b>：<code>标记点跟踪/demo_09_displacement_heatmap.py</code></p>
+<h4>学习内容</h4>
+<ul>
+<li>正向点映射：原始坐标 → 矫正后坐标（三角剖分逆变换）</li>
+<li>位移场计算（矫正后坐标系下）</li>
+<li>物理单位转换：像素 → 毫米</li>
+<li>位移热力图可视化（|d|、dx、dy）</li>
+<li>Quiver 箭头图（位移方向 + 大小）</li>
+</ul>
+<h4>核心难点：正向点映射</h4>
+<p><b>问题</b>：Warp 的 map_x/map_y 是反向映射（矫正后 → 原始），而我们需要把原始图的标记点映射到矫正后坐标。</p>
+<p><b>解决方案</b>：利用 Warp 构建时保存的三角剖分信息，通过 barycentric 坐标实现正向映射。</p>
+<pre><code>def warp_points_raw_to_rect(points_raw, meta):
+    对每个原始点：
+      1. 找到它落在哪个三角形里
+      2. 计算 barycentric 权重
+      3. 用权重 × 目标三角形顶点 = 矫正后坐标
+    返回矫正后的点坐标
+</code></pre>
+<h4>物理单位转换</h4>
+<pre><code>位移(mm) = 位移(px) × 物理尺度(mm/px)
+
+其中物理尺度由 Warp 参数决定：
+  pitch_x_mm = 0.6 mm（标记点水平间距）
+  pitch_y_mm = 0.6 mm（标记点垂直间距）
+  out_width / (N_COLS - 1) = 每列像素数
+  mm_per_px = pitch_x_mm / (out_width / (N_COLS - 1))
+</code></pre>
+<h4>关键参数</h4>
+<table>
+<colgroup><col/><col/><col/></colgroup>
+<thead>
+<tr><th><p>参数</p></th><th><p>值</p></th><th><p>说明</p></th></tr>
+</thead>
+<tbody>
+<tr><td><p>矫正后尺寸</p></td><td><p>320 × 538 px</p></td><td><p>Warp 输出尺寸</p></td></tr>
+<tr><td><p>物理尺度</p></td><td><p>0.032 mm/px</p></td><td><p>每像素对应的毫米数</p></td></tr>
+<tr><td><p>Inpaint 半径</p></td><td><p>3 px</p></td><td><p>Telea 算法修复半径</p></td></tr>
+<tr><td><p>网格规格</p></td><td><p>21行 × 16列 = 336点</p></td><td><p>与 Phase 1 一致</p></td></tr>
+</tbody>
+</table>
+<hr/>
+
+<h3>📍 demo_10：批量验证（10 张图）</h3>
+<p><b>状态</b>：✅ 已完成<br/><b>学习日期</b>：2026-06<br/><b>核心文件</b>：<code>标记点跟踪/demo_10_batch_validate.py</code></p>
+<h4>学习内容</h4>
+<ul>
+<li>从 400 张接触图像中均匀选取 10 张验证</li>
+<li>批量处理流水线的搭建</li>
+<li>统计汇总：有效点数、最大/平均位移</li>
+<li>发现大位移图像的排序问题</li>
+</ul>
+<h4>10 张验证图像</h4>
+<table>
+<colgroup><col/><col/><col/><col/></colgroup>
+<thead>
+<tr><th><p>序号</p></th><th><p>文件名</p></th><th><p>有效点</p></th><th><p>最大位移</p></th></tr>
+</thead>
+<tbody>
+<tr><td><p>1</p></td><td><p>image_20260430_135445_239</p></td><td><p>336</p></td><td><p>0.195 mm</p></td></tr>
+<tr><td><p>2</p></td><td><p>image_20260430_135624_088</p></td><td><p>336</p></td><td><p>0.186 mm</p></td></tr>
+<tr><td><p>3</p></td><td><p>image_20260430_140023_084</p></td><td><p>336</p></td><td><p>0.287 mm</p></td></tr>
+<tr><td><p>4</p></td><td><p>image_20260430_140219_398</p></td><td><p>336</p></td><td><p>0.210 mm</p></td></tr>
+<tr><td><p>5</p></td><td><p>image_20260430_140321_081</p></td><td><p>336</p></td><td><p>0.152 mm</p></td></tr>
+<tr><td><p>6</p></td><td><p>image_20260430_140544_824</p></td><td><p>336</p></td><td><p>0.172 mm</p></td></tr>
+<tr><td><p>7</p></td><td><p>image_20260430_140639_828 ⚠️大位移</p></td><td><p>320</p></td><td><p>0.634 mm</p></td></tr>
+<tr><td><p>8</p></td><td><p>image_20260430_140728_828 ⚠️最大位移</p></td><td><p>292</p></td><td><p>1.244 mm</p></td></tr>
+<tr><td><p>9</p></td><td><p>image_20260430_140820_984 ⚠️大位移</p></td><td><p>313</p></td><td><p>0.628 mm</p></td></tr>
+<tr><td><p>10</p></td><td><p>image_20260430_140908_629</p></td><td><p>336</p></td><td><p>0.166 mm</p></td></tr>
+</tbody>
+</table>
+<hr/>
+
+<h3>📌 补充：排序算法鲁棒性改进</h3>
+<h4>问题背景</h4>
+<p>大位移图像中，k-means 聚类排序可能失效——因为行间距被挤压得不均匀，k-means 的"均匀簇"假设不成立。</p>
+<h4>改进方案（借鉴 viewtacv2 原项目）</h4>
+<h5>1. 拓扑检查函数 validate_grid_topology</h5>
+<pre><code>检查 4 项指标：
+  ① 每行 x 坐标单调性（从左到右递增）
+  ② 每列 y 坐标单调性（从上到下递增）
+  ③ 水平间距一致性
+  ④ 垂直间距一致性
+
+返回：问题数量（0 = 完美，越大越乱）
+</code></pre>
+<h5>2. Rank-based Fallback 兜底算法</h5>
+<pre><code>思路：不聚类了，直接按行坐标排序，均分成 N 行
+  1. 所有点按行方向坐标排序
+  2. 前 N_COLS 个点 = 第1行，接下来 N_COLS 个 = 第2行 ...
+  3. 每行内按列坐标排序
+
+为什么更鲁棒？
+  k-means 假设：行间距均匀（大变形下不成立）
+  rank-based 假设：点的前后顺序不乱（皮肤不会断裂，更成立）
+</code></pre>
+<h5>3. 多策略择优框架</h5>
+<pre><code>排序时尝试 16 种组合，选拓扑问题最少的：
+  8 种 k-means 组合（轴交换×2 × 列翻转×2 × 行翻转×2）
+  + 8 种 rank-based 组合
+  = 选最好的那个
+</code></pre>
+<h4>改进效果</h4>
+<p>当前 10 张验证图中，排序本身没有拓扑问题（0 问题），但改进提升了极端变形下的鲁棒性天花板，为后续更复杂的接触场景做了准备。</p>
+<hr/>
